@@ -21,17 +21,31 @@ import src.data
 import src.model
 import wandb
 
+import os
+os.environ["OMP_NUM_THREADS"] = "1" 
+os.environ["MKL_NUM_THREADS"] = "1" 
 
-def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, collator, best_dev_em, checkpoint_path):
+def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, collator, best_dev_em, checkpoint_path, tokenizer, logger):
 
+    if opt.local_rank == 0:
+        try:
+            tb_logger = torch.utils.tensorboard.SummaryWriter(Path(opt.checkpoint_dir)/opt.name)
+        except:
+            tb_logger = None
+            logger.warning('Tensorboard is not available.')
+            wandb.init("T5-multidoc")
+        
     torch.manual_seed(opt.global_rank + opt.seed) #different seed for different sampling depending on global_rank
-    train_sampler = RandomSampler(train_dataset)
+    print(opt.world_size)
+    print(opt.local_rank)
+    opt.device = "cuda:{}".format(opt.local_rank)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=opt.world_size, rank=opt.local_rank)
+
     train_dataloader = DataLoader(
         train_dataset,
         sampler=train_sampler,
         batch_size=opt.per_gpu_batch_size,
         drop_last=True,
-        num_workers=10,
         collate_fn=collator
     )
     print("Built Data Loader")
@@ -48,7 +62,8 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
             train_loss = model(
                 input_ids=context_ids.cuda(),
                 attention_mask=context_mask.cuda(),
-                labels=labels.cuda()
+                labels=labels.cuda(), 
+                return_dict=False
             )[0]
 
             train_loss.backward()
@@ -60,7 +75,7 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
                 model.zero_grad()
 
             train_loss = src.util.average_main(train_loss, opt)
-            print("loss_train", train_loss.item())
+
             wandb.log({"loss_train": train_loss.item()})
             curr_loss += train_loss.item()
 
@@ -74,9 +89,8 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
                                   opt, checkpoint_path, 'best_dev')
                     log = f"{step} / {opt.total_steps} |"
                     log += f"train: {curr_loss/opt.eval_freq:.3f} |"
-                    wandb.log({"curr_loss_eval_freq": curr_loss/opt.eval_freq})
                     log += f"evaluation: {100*dev_em:.2f}EM |"
-                    wandb.log({"EM eval": 100*dev_em})
+                    wandb.log({"EM evaluation": 100*dev_em})
                     log += f"lr: {scheduler.get_last_lr()[0]:.5f}"
                     logger.info(log)    
                     if tb_logger is not None:
@@ -126,7 +140,9 @@ def evaluate(model, dataset, tokenizer, collator, opt):
 import torch.multiprocessing as mp
 def main(gpu, opt):
     rank = opt.nr * opt.gpus + gpu
-    dist.init_process_group(backend='gloo', init_method='env://', world_size=opt.world_size, rank=rank)
+    # if rank == 0:
+    #     wandb.init(project="zaloAI", name="T5-multidoc-reader")
+    dist.init_process_group(backend='nccl', init_method='env://', world_size=opt.world_size, rank=rank)
 
     checkpoint_path = Path(opt.checkpoint_dir)/opt.name
     checkpoint_exists = checkpoint_path.exists()
@@ -206,10 +222,11 @@ def main(gpu, opt):
         opt,
         collator,
         best_dev_em,
-        checkpoint_path
+        checkpoint_path,
+        tokenizer,
+        logger
     )
 if __name__ == "__main__":
-    wandb.init(project="zaloAI", name="T5-multidoc-reader")
     options = Options()
     options.add_reader_options()
     options.add_optim_options()

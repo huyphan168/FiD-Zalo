@@ -1,0 +1,21 @@
+#!/bin/bash
+#SBATCH --output="HAL_outputs/vid.%j.%N.out"
+#SBATCH --error="HAL_outputs/vid.%j.%N.err"
+#SBATCH --mem=128g
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=16     
+#SBATCH --partition=gpuA100x4
+#SBATCH --time=24:00:00
+#SBATCH --account=bbmp-delta-gpu
+#SBATCH --job-name=robust
+#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-task=1
+#SBATCH --gpu-bind=verbose,per_task:1
+
+module purge 
+module load anaconda3_gpu
+conda run -n mmpose NGPU=4 python -m torch.distributed.launch \
+--nproc_per_node=4 train_reader.py --train_data squad_zalo1.json \
+--eval_data squad_zalo1.json --model_size base --per_gpu_batch_size 1 \
+--n_context 1 --name zaloai
