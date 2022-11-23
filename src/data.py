@@ -126,6 +126,7 @@ def load_data(data_path=None, global_rank=-1, world_size=-1):
     elif data_path.endswith('.json'):
         with open(data_path, 'r') as fin:
             data = json.load(fin)
+            data = data["data"]
     examples = []
     for k, example in enumerate(data):
         if global_rank > -1 and not k%world_size==global_rank:

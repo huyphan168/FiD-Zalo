@@ -14,8 +14,8 @@ export MASTER_ADDR=$master_addr
 echo "MASTER_ADDR="$MASTER_ADDR
 module load opence
 conda run -n mmpose python -m torch.distributed.launch \
-                --nproc_per_node=4 train_reader.py --train_data squad_zalo1.json \
-                --eval_data squad_zalo1.json --model_size base --per_gpu_batch_size 10 \
+                --nproc_per_node=4 train_reader.py --train_data wiki2019_zalo.json \
+                --eval_data wiki2019_zalo.json --model_size base --per_gpu_batch_size 10 \
                 --n_context 1 --name zaloai
 # python -m torch.distributed.launch \
 #                 --nproc_per_node=1 train_reader.py --train_data squad_zalo1.json \
