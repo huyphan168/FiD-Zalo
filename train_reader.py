@@ -12,22 +12,17 @@ import numpy as np
 from pathlib import Path
 from torch.utils.data import DataLoader, RandomSampler, DistributedSampler, SequentialSampler
 from src.options import Options
+import torch.distributed as dist
 
 import src.slurm
 import src.util
 import src.evaluation
 import src.data
 import src.model
+import wandb
 
 
 def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, collator, best_dev_em, checkpoint_path):
-
-    if opt.is_main:
-        try:
-            tb_logger = torch.utils.tensorboard.SummaryWriter(Path(opt.checkpoint_dir)/opt.name)
-        except:
-            tb_logger = None
-            logger.warning('Tensorboard is not available.')
 
     torch.manual_seed(opt.global_rank + opt.seed) #different seed for different sampling depending on global_rank
     train_sampler = RandomSampler(train_dataset)
@@ -39,6 +34,7 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
         num_workers=10,
         collate_fn=collator
     )
+    print("Built Data Loader")
 
     loss, curr_loss = 0.0, 0.0
     epoch = 1
@@ -64,19 +60,23 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
                 model.zero_grad()
 
             train_loss = src.util.average_main(train_loss, opt)
+            print("loss_train", train_loss.item())
+            wandb.log({"loss_train": train_loss.item()})
             curr_loss += train_loss.item()
 
             if step % opt.eval_freq == 0:
                 dev_em = evaluate(model, eval_dataset, tokenizer, collator, opt)
                 model.train()
-                if opt.is_main:
+                if opt.nr==0:
                     if dev_em > best_dev_em:
                         best_dev_em = dev_em
                         src.util.save(model, optimizer, scheduler, step, best_dev_em,
                                   opt, checkpoint_path, 'best_dev')
                     log = f"{step} / {opt.total_steps} |"
                     log += f"train: {curr_loss/opt.eval_freq:.3f} |"
+                    wandb.log({"curr_loss_eval_freq": curr_loss/opt.eval_freq})
                     log += f"evaluation: {100*dev_em:.2f}EM |"
+                    wandb.log({"EM eval": 100*dev_em})
                     log += f"lr: {scheduler.get_last_lr()[0]:.5f}"
                     logger.info(log)    
                     if tb_logger is not None:
@@ -84,7 +84,7 @@ def train(model, optimizer, scheduler, step, train_dataset, eval_dataset, opt, c
                         tb_logger.add_scalar("Training", curr_loss / (opt.eval_freq), step)
                     curr_loss = 0.
 
-            if opt.is_main and step % opt.save_freq == 0:
+            if opt.nr==0 and step % opt.save_freq == 0:
                 src.util.save(model, optimizer, scheduler, step, best_dev_em,
                           opt, checkpoint_path, f"step-{step}")
             if step > opt.total_steps:
@@ -123,39 +123,34 @@ def evaluate(model, dataset, tokenizer, collator, opt):
     exactmatch, total = src.util.weighted_average(np.mean(exactmatch), total, opt)
     return exactmatch
 
-if __name__ == "__main__":
-    options = Options()
-    options.add_reader_options()
-    options.add_optim_options()
-    opt = options.parse()
-    #opt = options.get_options(use_reader=True, use_optim=True)
-
-    torch.manual_seed(opt.seed)
-    src.slurm.init_distributed_mode(opt)
-    src.slurm.init_signal_handler()
+import torch.multiprocessing as mp
+def main(gpu, opt):
+    rank = opt.nr * opt.gpus + gpu
+    dist.init_process_group(backend='gloo', init_method='env://', world_size=opt.world_size, rank=rank)
 
     checkpoint_path = Path(opt.checkpoint_dir)/opt.name
     checkpoint_exists = checkpoint_path.exists()
-    if opt.is_distributed:
-        torch.distributed.barrier()
+    # if opt.is_distributed:
+    #     torch.distributed.barrier()
     checkpoint_path.mkdir(parents=True, exist_ok=True)
     #if not checkpoint_exists and opt.is_main:
     #    options.print_options(opt)
     #checkpoint_path, checkpoint_exists = util.get_checkpoint_path(opt)
 
     logger = src.util.init_logger(
-        opt.is_main,
+        opt.local_rank,
         opt.is_distributed,
         checkpoint_path / 'run.log'
     )
 
-    model_name = 't5-' + opt.model_size
+    model_name = 'VietAI/vit5-' + opt.model_size
     model_class = src.model.FiDT5
-
+    print("="*200)
+    print("Loading data.")
     #load data
     tokenizer = transformers.T5Tokenizer.from_pretrained(model_name)
     collator = src.data.Collator(opt.text_maxlength, tokenizer, answer_maxlength=opt.answer_maxlength)
-
+    
     # use golbal rank and world size to split the eval set on multiple gpus
     train_examples = src.data.load_data(
         opt.train_data, 
@@ -170,12 +165,14 @@ if __name__ == "__main__":
         world_size=opt.world_size,
     )
     eval_dataset = src.data.Dataset(eval_examples, opt.n_context)
+    print("Data loaded.")
 
     if not checkpoint_exists and opt.model_path == "none":
         t5 = transformers.T5ForConditionalGeneration.from_pretrained(model_name)
         model = src.model.FiDT5(t5.config)
         model.load_t5(t5.state_dict())
-        model = model.to(opt.local_rank)
+        torch.cuda.set_device(gpu)
+        model.cuda(gpu)
         optimizer, scheduler = src.util.set_optim(opt, model)
         step, best_dev_em = 0, 0.0
     elif opt.model_path == "none":
@@ -193,8 +190,8 @@ if __name__ == "__main__":
     if opt.is_distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
-            device_ids=[opt.local_rank],
-            output_device=opt.local_rank,
+            device_ids=[gpu],
+            output_device=[gpu],
             find_unused_parameters=False,
         )
 
@@ -211,3 +208,18 @@ if __name__ == "__main__":
         best_dev_em,
         checkpoint_path
     )
+if __name__ == "__main__":
+    wandb.init(project="zaloAI", name="T5-multidoc-reader")
+    options = Options()
+    options.add_reader_options()
+    options.add_optim_options()
+    opt = options.parse()
+    #opt = options.get_options(use_reader=True, use_optim=True)
+
+    torch.manual_seed(opt.seed)
+    # src.slurm.init_distributed_mode(opt)
+    # print("Init distributed mode")
+    # src.slurm.init_signal_handler()
+    # print("Init signal handler")
+    opt.world_size = opt.gpus * opt.nodes
+    mp.spawn(main, nprocs=opt.gpus, args=(opt,))

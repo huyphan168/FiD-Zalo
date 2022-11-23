@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --job-name="zaloAI"
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=16
+#SBATCH --cores-per-socket=20
+#SBATCH --threads-per-core=4
+#SBATCH --sockets-per-node=2
+#SBATCH --mem-per-cpu=1200
+#SBATCH --export=ALL
+#SBATCH --gres=gpu:v100:4
+#SBATCH --time=24:00:00
+#SBATCH --output="HAL_outputs/vid.%j.%N.out"
+#SBATCH --error="HAL_outputs/vid.%j.%N.err"
+ 
+export MASTER_PORT=12340
+export WORLD_SIZE=4
+ export NCCL_P2P_DISABLE=1
+ 
+echo "NODELIST="${SLURM_NODELIST}
+master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
+export MASTER_ADDR=$master_addr
+echo "MASTER_ADDR="$MASTER_ADDR
+ 
+
+
+module load opence
+cd /home/huypn168/FiD/
+conda run -n mmpose python -m torch.distributed.launch \
+--nproc_per_node=4 train_reader.py --train_data squad_zalo.json \
+--eval_data squad_zalo1.json --model_size base --per_gpu_batch_size 10 \
+--n_context 1 --name zaloai

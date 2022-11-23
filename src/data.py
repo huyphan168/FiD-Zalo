@@ -134,6 +134,7 @@ def load_data(data_path=None, global_rank=-1, world_size=-1):
             example = json.loads(example)
         if not 'id' in example:
             example['id'] = k
+        # print(example)
         for c in example['ctxs']:
             if not 'score' in c:
                 c['score'] = 1.0 / (k + 1)

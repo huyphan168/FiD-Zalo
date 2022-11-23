@@ -16,7 +16,9 @@ import csv
 
 logger = logging.getLogger(__name__)
 
-def init_logger(is_main=True, is_distributed=False, filename=None):
+def init_logger(is_main=0, is_distributed=False, filename=None):
+    if is_main == 0:
+        is_main = True
     if is_distributed:
         torch.distributed.barrier()
     handlers = [logging.StreamHandler(sys.stdout)]

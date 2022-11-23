@@ -1,0 +1,5 @@
+open_domain_data/*
+checkpoint/*
+wandb/*
+squad_zalo.json
+HAL_outputs/*

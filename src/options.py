@@ -79,8 +79,16 @@ class Options():
 
         self.parser.add_argument("--local_rank", type=int, default=-1,
                         help="For distributed training: local_rank")
-        self.parser.add_argument("--main_port", type=int, default=-1,
-                        help="Main port (for multi-node SLURM jobs)")
+        self.parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
+                        help='number of data loading workers (default: 1)')
+        self.parser.add_argument('--is-distributed', default=True, type=bool)
+        self.parser.add_argument('--global-rank', default=0, type=int)
+        self.parser.add_argument('--gpus', default=1, type=int,
+                            help='number of gpus per node')
+        self.parser.add_argument('--nr', default=0, type=int,
+                            help='ranking within the nodes')
+        # self.parser.add_argument("--main_port", type=int, default=-1,
+        #                 help="Main port (for multi-node SLURM jobs)")
         self.parser.add_argument('--seed', type=int, default=0, help="random seed for initialization")
         # training parameters
         self.parser.add_argument('--eval_freq', type=int, default=500,
